@@ -239,15 +239,18 @@ Still, we are within reasonable distance from TCC performance, and an order of m
 ### Codegen quality
 
 We can compare the relative quality of code generated from lacc and GCC by looking at the number of dynamic instructions executed by the selfhost binary versus a binary built by GCC.
-In both cases we do not enable any optimizations, so this is a measure of code generated with -O0.
+We run the same test as above, compiling sqlite to object code.
+Targets for the test are the default compiler build (`bin/lacc`) produced by GCC, and the selfhost binary (`bin/selfhost/lacc`) produced by lacc.
+Both of these targets are produced without any optimizations enabled, and also without defining `NDEBUG` to disable asserts.
 
-| Compiler        | Cycles        | Instructions   |
-|:----------------|--------------:|---------------:|
-| lacc            | 1,039,023,504 |  1,568,160,799 |
-| lacc (selfhost) | 1,545,791,224 |  2,279,713,970 |
+| Compiler          | Cycles        | Instructions   | Binary size (B) |
+|:------------------|--------------:|---------------:|----------------:|
+| bin/lacc          | 1,029,306 606 |  1,659,594,278 |         687,568 |
+| bin/selfhost/lacc | 1,573,420 887 |  2,361,950,715 |       1,588,666 |
 
-Around 50 % more instructions executed by the selfhost binary, showing that lacc generates more naive code than GCC.
-Improving the backend with more efficient instruction selection is a priority, so these numbers should get closer in the future.
+The compiler built by itself executes more instructions when compiling sqlite, showing that lacc generates inefficient code compared to GCC.
+We can also note that the size of the selfhosted compiler executable is much larger.
+Improving the backend with better instruction selection is a priority, so these numbers should hopefully get closer in the future.
 
 References
 ----------
