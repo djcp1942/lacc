@@ -76,14 +76,13 @@ static struct block *parse__builtin_va_start(
     Type type;
     const struct member *mb;
     const struct symbol *sym;
-    struct token param;
 
     consume('(');
     block = assignment_expression(def, block);
     consume(',');
-    param = consume(IDENTIFIER);
+    consume(IDENTIFIER);
 
-    sym = find_symbol(param.d.string);
+    sym = find_symbol(access_token(0)->d.string);
     type = def->symbol->type;
     if (!is_vararg(type)) {
         error("Function must be vararg to use va_start.");
@@ -118,12 +117,12 @@ static struct block *parse__builtin_va_arg(
     value = eval(def, block, block->expr);
     consume(',');
     type = declaration_specifiers(NULL);
-    if (peek().token != ')') {
+    if (peek() != ')') {
         block = declarator(def, block, type, &type, NULL);
     }
 
     consume(')');
-    block->expr = eval_expr(def, block, IR_OP_VA_ARG, value, type);
+    block->expr = eval_va_arg(def, block, value, type);
     return block;
 }
 
@@ -156,7 +155,7 @@ static struct block *parse__builtin_alloca(
     array_push_back(&def->locals, sym);
 
     block = declare_vla(def, block, sym);
-    block->expr = eval_expr(def, block, IR_OP_CAST, var_direct(sym),
+    block->expr = eval_cast(def, block, var_direct(sym),
         type_create_pointer(basic_type__void));
     return block;
 }
@@ -176,12 +175,13 @@ static struct block *primary_expression(
     struct block *block)
 {
     const struct symbol *sym;
-    struct token tok;
+    const struct token *tok;
 
-
-    switch ((tok = next()).token) {
+    next();
+    tok = access_token(0);
+    switch (tok->token) {
     case IDENTIFIER:
-        sym = find_symbol(tok.d.string);
+        sym = find_symbol(tok->d.string);
         if (str_eq(str__builtin_va_start, sym->name)) {
             block = parse__builtin_va_start(def, block);
         } else if (str_eq(str__builtin_va_arg, sym->name)) {
@@ -193,7 +193,7 @@ static struct block *primary_expression(
         }
         break;
     case NUMBER:
-        block->expr = as_expr(var_numeric(tok.type, tok.d.val));
+        block->expr = as_expr(var_numeric(tok->type, tok->d.val));
         assert(is_identity(block->expr));
         break;
     case '(':
@@ -201,14 +201,14 @@ static struct block *primary_expression(
         consume(')');
         break;
     case STRING:
-        sym = sym_create_string(tok.d.string);
+        sym = sym_create_string(tok->d.string);
         block->expr = as_expr(var_direct(sym));
         assert(is_identity(block->expr));
         assert(block->expr.l.kind == DIRECT);
         break;
     default:
         error("Unexpected '%s', not a valid primary expression.",
-            str_raw(tok.d.string));
+            str_raw(tok->d.string));
         exit(1);
     }
 
@@ -247,18 +247,18 @@ static struct block *postfix(
     struct definition *def,
     struct block *block)
 {
+    int i;
     struct expression root;
     struct var value, copy;
     const struct member *mbr;
-    struct token tok;
-    int i;
     Type type;
+    String str;
     ExprArray *args;
 
     root = block->expr;
 
     while (1) {
-        switch ((tok = peek()).token) {
+        switch (peek()) {
         case '[':
             do {
                 /*
@@ -266,17 +266,16 @@ static struct block *postfix(
                  * arithmetic takes care of multiplying b with the
                  * correct width.
                  */
-                consume('[');
+                next();
                 value = eval(def, block, block->expr);
                 block = expression(def, block);
                 block->expr =
-                    eval_expr(def, block, IR_OP_ADD, value,
-                        eval(def, block, block->expr));
+                    eval_add(def, block, value, eval(def, block, block->expr));
                 block->expr =
                     as_expr(
                         eval_deref(def, block, eval(def, block, block->expr)));
                 consume(']');
-            } while (peek().token == '[');
+            } while (peek() == '[');
             root = block->expr;
             break;
         case '(':
@@ -288,59 +287,48 @@ static struct block *postfix(
                     type);
                 exit(1);
             }
-            consume('(');
+            next();
             args = push_argument_list();
             for (i = 0; i < nmembers(type); ++i) {
-                if (peek().token == ')') {
+                if (peek() == ')') {
                     error("Too few arguments, expected %d but got %d.",
                         nmembers(type), i);
                     exit(1);
                 }
                 mbr = get_member(type, i);
                 block = assignment_expression(def, block);
-                if (!type_equal(block->expr.type, mbr->type)) {
-                    value = eval(def, block, block->expr);
-                    block->expr =
-                        eval_expr(def, block, IR_OP_CAST, value, mbr->type);
-                }
-                block->expr = eval_param(def, block, block->expr);
+                block->expr =
+                    eval_prepare_arg(def, block, block->expr, mbr->type);
                 array_push_back(args, block->expr);
                 if (i < nmembers(type) - 1) {
                     consume(',');
                 }
             }
-            while (is_vararg(type) && peek().token != ')') {
-                consume(',');
-                block = assignment_expression(def, block);
-                if (is_float(block->expr.type)) {
-                    /*
-                     * Single-precision arguments to vararg function are
-                     * automatically promoted to double.
-                     */
-                    value = eval(def, block, block->expr);
-                    block->expr = eval_expr(def, block, IR_OP_CAST,
-                        value, basic_type__double);
+            if (is_vararg(type)) {
+                while (peek() != ')') {
+                    consume(',');
+                    block = assignment_expression(def, block);
+                    block->expr = eval_prepare_vararg(def, block, block->expr);
+                    array_push_back(args, block->expr);
+                    i++;
                 }
-                block->expr = eval_param(def, block, block->expr);
-                array_push_back(args, block->expr);
-                i++;
             }
             consume(')');
             for (i = 0; i < array_len(args); ++i) {
-                param(block, array_get(args, i));
+                eval_push_param(block, array_get(args, i));
             }
             value = eval(def, block, root);
-            block->expr = eval_expr(def, block, IR_OP_CALL, value);
+            block->expr = eval_call(def, block, value);
             root = block->expr;
             pop_argument_list();
             break;
         case '.':
-            consume('.');
-            tok = consume(IDENTIFIER);
-            mbr = find_type_member(root.type, tok.d.string, NULL);
+            next();
+            consume(IDENTIFIER);
+            str = access_token(0)->d.string;
+            mbr = find_type_member(root.type, str, NULL);
             if (!mbr) {
-                error("Invalid access, no member named '%s'.",
-                    str_raw(tok.d.string));
+                error("Invalid access, no member named '%s'.", str_raw(str));
                 exit(1);
             }
             value = eval(def, block, root);
@@ -352,14 +340,15 @@ static struct block *postfix(
             root = block->expr;
             break;
         case ARROW:
-            consume(ARROW);
-            tok = consume(IDENTIFIER);
+            next();
+            consume(IDENTIFIER);
+            str = access_token(0)->d.string;
             value = eval_deref(def, block, eval(def, block, root));
             if (is_struct_or_union(value.type)) {
-                mbr = find_type_member(value.type, tok.d.string, NULL);
+                mbr = find_type_member(value.type, str, NULL);
                 if (!mbr) {
                     error("Invalid access, %t has no member named '%s'.",
-                        value.type, str_raw(tok.d.string));
+                        value.type, str_raw(str));
                     exit(1);
                 }
                 value.type = mbr->type;
@@ -374,19 +363,19 @@ static struct block *postfix(
             }
             break;
         case INCREMENT:
-            consume(INCREMENT);
+            next();
             value = eval(def, block, root);
             copy = eval_copy(def, block, value);
-            root = eval_expr(def, block, IR_OP_ADD, value, var_int(1));
+            root = eval_add(def, block, value, var_int(1));
             eval_assign(def, block, value, root);
             block->expr = as_expr(copy);
             root = block->expr;
             break;
         case DECREMENT:
-            consume(DECREMENT);
+            next();
             value = eval(def, block, root);
             copy = eval_copy(def, block, value);
-            root = eval_expr(def, block, IR_OP_SUB, value, var_int(1));
+            root = eval_sub(def, block, value, var_int(1));
             eval_assign(def, block, value, root);
             block->expr = as_expr(copy);
             root = block->expr;
@@ -403,7 +392,7 @@ static struct block *postfix_expression(
     struct block *block)
 {
     const struct symbol *sym;
-    struct token tok;
+    String str;
     Type type;
 
     /*
@@ -412,13 +401,12 @@ static struct block *postfix_expression(
      * current scope.
      */
     if (context.standard == STD_C89) {
-        tok = peek();
-        if (tok.token == IDENTIFIER && peekn(2).token == '(') {
-            sym = sym_lookup(&ns_ident, tok.d.string);
+        if (peek() == IDENTIFIER && peekn(2) == '(') {
+            str = access_token(1)->d.string;
+            sym = sym_lookup(&ns_ident, str);
             if (!sym) {
                 type = type_create_function(basic_type__int);
-                sym_add(&ns_ident, tok.d.string, type,
-                    SYM_DECLARATION, LINK_EXTERN);
+                sym_add(&ns_ident, str, type, SYM_DECLARATION, LINK_EXTERN);
             }
         }
     }
@@ -434,23 +422,24 @@ static struct block *unary_expression(
     struct var value;
     struct block *head, *tail;
     const struct symbol *sym;
+    String str;
     Type type;
 
-    switch (peek().token) {
+    switch (peek()) {
     case '&':
-        consume('&');
+        next();
         block = cast_expression(def, block);
         value = eval(def, block, block->expr);
         block->expr = as_expr(eval_addr(def, block, value));
         break;
     case '*':
-        consume('*');
+        next();
         block = cast_expression(def, block);
         value = eval(def, block, block->expr);
         block->expr = as_expr(eval_deref(def, block, value));
         break;
     case '!':
-        consume('!');
+        next();
         block = cast_expression(def, block);
         switch (block->expr.op) {
         case IR_OP_EQ:
@@ -473,40 +462,41 @@ static struct block *unary_expression(
             break;
         default:
             value = eval(def, block, block->expr);
-            block->expr = eval_expr(def, block, IR_OP_EQ, var_int(0), value);
+            block->expr = eval_cmp_eq(def, block, var_int(0), value);
             break;
         }
         break;
     case '~':
-        consume('~');
+        next();
         block = cast_expression(def, block);
         value = eval(def, block, block->expr);
-        block->expr = eval_expr(def, block, IR_OP_NOT, value);
+        block->expr = eval_not(def, block, value);
         break;
     case '+':
-        consume('+');
+        next();
         block = cast_expression(def, block);
         value = eval(def, block, block->expr);
         block->expr = eval_unary_plus(value);
         break;
     case '-':
-        consume('-');
+        next();
         block = cast_expression(def, block);
         value = eval(def, block, block->expr);
-        block->expr = eval_expr(def, block, IR_OP_NEG, value);
+        block->expr = eval_neg(def, block, value);
         break;
     case SIZEOF:
-        consume(SIZEOF);
-        if (peek().token == '(') {
-            switch (peekn(2).token) {
+        next();
+        if (peek() == '(') {
+            switch (peekn(2)) {
             case IDENTIFIER:
-                sym = sym_lookup(&ns_ident, peekn(2).d.string);
+                str = access_token(2)->d.string;
+                sym = sym_lookup(&ns_ident, str);
                 if (!sym || sym->symtype != SYM_TYPEDEF)
                     goto exprsize;;
             case FIRST(type_name):
                 consume('(');
                 type = declaration_specifiers(NULL);
-                if (peek().token != ')') {
+                if (peek() != ')') {
                     block = declarator(def, block, type, &type, NULL);
                 }
                 consume(')');
@@ -534,7 +524,7 @@ exprsize:   head = cfg_block_init(def);
         next();
         consume('(');
         type = declaration_specifiers(NULL);
-        if (peek().token != ')') {
+        if (peek() != ')') {
             block = declarator(def, block, type, &type, NULL);
         }
         if (is_function(type)) {
@@ -548,17 +538,17 @@ exprsize:   head = cfg_block_init(def);
         consume(')');
         break;
     case INCREMENT:
-        consume(INCREMENT);
+        next();
         block = unary_expression(def, block);
         value = eval(def, block, block->expr);
-        block->expr = eval_expr(def, block, IR_OP_ADD, value, var_int(1));
+        block->expr = eval_add(def, block, value, var_int(1));
         block->expr = as_expr(eval_assign(def, block, value, block->expr));
         break;
     case DECREMENT:
-        consume(DECREMENT);
+        next();
         block = unary_expression(def, block);
         value = eval(def, block, block->expr);
-        block->expr = eval_expr(def, block, IR_OP_SUB, value, var_int(1));
+        block->expr = eval_sub(def, block, value, var_int(1));
         block->expr = as_expr(eval_assign(def, block, value, block->expr));
         break;
     default:
@@ -604,31 +594,31 @@ static struct block *cast_expression(
     struct block *block)
 {
     struct var value;
-    struct token tok;
     struct symbol *sym;
+    String str;
     Type type;
 
-    if (peek().token == '(') {
-        tok = peekn(2);
-        switch (tok.token) {
+    if (peek() == '(') {
+        switch (peekn(2)) {
         case IDENTIFIER:
-            sym = sym_lookup(&ns_ident, tok.d.string);
+            str = access_token(2)->d.string;
+            sym = sym_lookup(&ns_ident, str);
             if (!sym || sym->symtype != SYM_TYPEDEF)
                 break;
         case FIRST(type_name):
             next();
             type = declaration_specifiers(NULL);
-            if (peek().token != ')') {
+            if (peek() != ')') {
                 block = declarator(def, block, type, &type, NULL);
             }
             consume(')');
-            if (peek().token == '{') {
+            if (peek() == '{') {
                 block = compound_literal(def, block, type);
                 return postfix(def, block);
             } else {
                 block = cast_expression(def, block);
                 value = eval(def, block, block->expr);
-                block->expr = eval_expr(def, block, IR_OP_CAST, value, type);
+                block->expr = eval_cast(def, block, value, type);
                 return block;
             }
         default:
@@ -644,28 +634,28 @@ static struct block *multiplicative_expression(
     struct block *block)
 {
     struct var value;
-    struct token t;
+    enum token_type t;
 
     block = cast_expression(def, block);
     while (1) {
         t = peek();
-        if (t.token == '*') {
-            consume('*');
+        if (t == '*') {
+            next();
             value = eval(def, block, block->expr);
             block = cast_expression(def, block);
-            block->expr = eval_expr(def, block, IR_OP_MUL, value,
+            block->expr = eval_mul(def, block, value,
                 eval(def, block, block->expr));
-        } else if (t.token == '/') {
-            consume('/');
+        } else if (t == '/') {
+            next();
             value = eval(def, block, block->expr);
             block = cast_expression(def, block);
-            block->expr = eval_expr(def, block, IR_OP_DIV, value,
+            block->expr = eval_div(def, block, value,
                 eval(def, block, block->expr));
-        } else if (t.token == '%') {
-            consume('%');
+        } else if (t == '%') {
+            next();
             value = eval(def, block, block->expr);
             block = cast_expression(def, block);
-            block->expr = eval_expr(def, block, IR_OP_MOD, value,
+            block->expr = eval_mod(def, block, value,
                 eval(def, block, block->expr));
         } else break;
     }
@@ -678,22 +668,22 @@ static struct block *additive_expression(
     struct block *block)
 {
     struct var value;
-    struct token t;
+    enum token_type t;
 
     block = multiplicative_expression(def, block);
     while (1) {
         t = peek();
-        if (t.token == '+') {
-            consume('+');
+        if (t == '+') {
+            next();
             value = eval(def, block, block->expr);
             block = multiplicative_expression(def, block);
-            block->expr = eval_expr(def, block, IR_OP_ADD, value,
+            block->expr = eval_add(def, block, value,
                 eval(def, block, block->expr));
-        } else if (t.token == '-') {
-            consume('-');
+        } else if (t == '-') {
+            next();
             value = eval(def, block, block->expr);
             block = multiplicative_expression(def, block);
-            block->expr = eval_expr(def, block, IR_OP_SUB, value,
+            block->expr = eval_sub(def, block, value,
                 eval(def, block, block->expr));
         } else break;
     }
@@ -706,23 +696,23 @@ static struct block *shift_expression(
     struct block *block)
 {
     struct var value;
-    struct token t;
+    enum token_type t;
 
     block = additive_expression(def, block);
     while (1) {
         t = peek();
-        if (t.token == LSHIFT) {
-            consume(LSHIFT);
+        if (t == LSHIFT) {
+            next();
             value = eval(def, block, block->expr);
             block = additive_expression(def, block);
-            block->expr = eval_expr(def, block, IR_OP_SHL, value,
-                eval(def, block, block->expr));
-        } else if (t.token == RSHIFT) {
-            consume(RSHIFT);
+            block->expr =
+                eval_lshift(def, block, value, eval(def, block, block->expr));
+        } else if (t == RSHIFT) {
+            next();
             value = eval(def, block, block->expr);
             block = additive_expression(def, block);
-            block->expr = eval_expr(def, block, IR_OP_SHR, value,
-                eval(def, block, block->expr));
+            block->expr =
+                eval_rshift(def, block, value, eval(def, block, block->expr));
         } else break;
     }
 
@@ -737,33 +727,33 @@ static struct block *relational_expression(
 
     block = shift_expression(def, block);
     while (1) {
-        switch (peek().token) {
+        switch (peek()) {
         case '<':
-            consume('<');
+            next();
             value = eval(def, block, block->expr);
             block = shift_expression(def, block);
-            block->expr = eval_expr(def, block, IR_OP_GT,
+            block->expr = eval_cmp_gt(def, block,
                 eval(def, block, block->expr), value);
             break;
         case '>':
-            consume('>');
+            next();
             value = eval(def, block, block->expr);
             block = shift_expression(def, block);
-            block->expr = eval_expr(def, block, IR_OP_GT,
+            block->expr = eval_cmp_gt(def, block,
                 value, eval(def, block, block->expr));
             break;
         case LEQ:
-            consume(LEQ);
+            next();
             value = eval(def, block, block->expr);
             block = shift_expression(def, block);
-            block->expr = eval_expr(def, block, IR_OP_GE,
+            block->expr = eval_cmp_ge(def, block,
                 eval(def, block, block->expr), value);
             break;
         case GEQ:
-            consume(GEQ);
+            next();
             value = eval(def, block, block->expr);
             block = shift_expression(def, block);
-            block->expr = eval_expr(def, block, IR_OP_GE,
+            block->expr = eval_cmp_ge(def, block,
                 value, eval(def, block, block->expr));
             break;
         default:
@@ -776,24 +766,24 @@ static struct block *equality_expression(
     struct definition *def,
     struct block *block)
 {
-    enum optype op;
-    struct var value;
-    struct token t;
+    struct var l, r;
+    enum token_type t;
 
     block = relational_expression(def, block);
     while (1) {
         t = peek();
-        if (t.token == EQ) {
-            consume(EQ);
-            op = IR_OP_EQ;
-        } else if (t.token == NEQ) {
-            consume(NEQ);
-            op = IR_OP_NE;
+        if (t == EQ || t == NEQ) {
+            next();
         } else break;
-        value = eval(def, block, block->expr);
+
+        l = eval(def, block, block->expr);
         block = relational_expression(def, block);
-        block->expr =
-            eval_expr(def, block, op, value, eval(def, block, block->expr));
+        r = eval(def, block, block->expr);
+        if (t == EQ) {
+            block->expr = eval_cmp_eq(def, block, l, r);
+        } else {
+            block->expr = eval_cmp_ne(def, block, l, r);
+        }
     }
 
     return block;
@@ -806,11 +796,10 @@ static struct block *and_expression(
     struct var value;
 
     block = equality_expression(def, block);
-    while (peek().token == '&') {
-        consume('&');
+    while (try_consume('&')) {
         value = eval(def, block, block->expr);
         block = equality_expression(def, block);
-        block->expr = eval_expr(def, block, IR_OP_AND, value,
+        block->expr = eval_and(def, block, value,
             eval(def, block, block->expr));
     }
 
@@ -824,11 +813,10 @@ static struct block *exclusive_or_expression(
     struct var value;
 
     block = and_expression(def, block);
-    while (peek().token == '^') {
-        consume('^');
+    while (try_consume('^')) {
         value = eval(def, block, block->expr);
         block = and_expression(def, block);
-        block->expr = eval_expr(def, block, IR_OP_XOR, value,
+        block->expr = eval_xor(def, block, value,
             eval(def, block, block->expr));
     }
 
@@ -842,12 +830,10 @@ static struct block *inclusive_or_expression(
     struct var value;
 
     block = exclusive_or_expression(def, block);
-    while (peek().token == '|') {
-        consume('|');
+    while (try_consume('|')) {
         value = eval(def, block, block->expr);
         block = exclusive_or_expression(def, block);
-        block->expr = eval_expr(def, block, IR_OP_OR, value,
-            eval(def, block, block->expr));
+        block->expr = eval_or(def, block, value, eval(def, block, block->expr));
     }
 
     return block;
@@ -860,8 +846,7 @@ static struct block *logical_and_expression(
     struct block *top, *right;
 
     block = inclusive_or_expression(def, block);
-    if (peek().token == LOGICAL_AND) {
-        next();
+    if (try_consume(LOGICAL_AND)) {
         top = cfg_block_init(def);
         right = logical_and_expression(def, top);
         block = eval_logical_and(def, block, top, right);
@@ -877,8 +862,7 @@ static struct block *logical_or_expression(
     struct block *top, *right;
 
     block = logical_and_expression(def, block);
-    if (peek().token == LOGICAL_OR) {
-        next();
+    if (try_consume(LOGICAL_OR)) {
         top = cfg_block_init(def);
         right = logical_or_expression(def, top);
         block = eval_logical_or(def, block, top, right);
@@ -897,12 +881,11 @@ INTERNAL struct block *conditional_expression(
     Type type;
 
     block = logical_or_expression(def, block);
-    if (peek().token != '?') {
+    if (!try_consume('?')) {
         return block;
     }
 
     block = scalar(def, block, "Conditional");
-    next();
     if (is_immediate(block->expr)) {
         b = immediate_bool(block->expr);
         if (b == 1) {
@@ -922,7 +905,7 @@ INTERNAL struct block *conditional_expression(
         if (is_void(type)) {
             block->expr = as_expr(var_void());
         } else {
-            block->expr = eval_expr(def, block, IR_OP_CAST,
+            block->expr = eval_cast(def, block,
                 eval(def, block, block->expr), type);
         }
     } else {
@@ -954,53 +937,24 @@ INTERNAL struct block *assignment_expression(
     struct definition *def,
     struct block *block)
 {
-    enum optype op = IR_OP_CAST;
+    enum token_type t;
     struct var target, value;
 
     block = conditional_expression(def, block);
-    switch (peek().token) {
+    t = peek();
+    switch (t) {
     case '=':
-        consume('=');
-        break;
     case MUL_ASSIGN:
-        consume(MUL_ASSIGN);
-        op = IR_OP_MUL;
-        break;
     case DIV_ASSIGN:
-        consume(DIV_ASSIGN);
-        op = IR_OP_DIV;
-        break;
     case MOD_ASSIGN:
-        consume(MOD_ASSIGN);
-        op = IR_OP_MOD;
-        break;
     case PLUS_ASSIGN:
-        consume(PLUS_ASSIGN);
-        op = IR_OP_ADD;
-        break;
     case MINUS_ASSIGN:
-        consume(MINUS_ASSIGN);
-        op = IR_OP_SUB;
-        break;
     case AND_ASSIGN:
-        consume(AND_ASSIGN);
-        op = IR_OP_AND;
-        break;
     case OR_ASSIGN:
-        consume(OR_ASSIGN);
-        op = IR_OP_OR;
-        break;
     case XOR_ASSIGN:
-        consume(XOR_ASSIGN);
-        op = IR_OP_XOR;
-        break;
     case RSHIFT_ASSIGN:
-        consume(RSHIFT_ASSIGN);
-        op = IR_OP_SHR;
-        break;
     case LSHIFT_ASSIGN:
-        consume(LSHIFT_ASSIGN);
-        op = IR_OP_SHL;
+        next();
         break;
     default:
         return block;
@@ -1008,9 +962,42 @@ INTERNAL struct block *assignment_expression(
 
     target = eval(def, block, block->expr);
     block = assignment_expression(def, block);
-    if (op != IR_OP_CAST) {
+    if (t != '=') {
         value = eval(def, block, block->expr);
-        block->expr = eval_expr(def, block, op, target, value);
+        switch (t) {
+        default:
+            assert(0);
+        case MUL_ASSIGN:
+            block->expr = eval_mul(def, block, target, value);
+            break;
+        case DIV_ASSIGN:
+            block->expr = eval_div(def, block, target, value);
+            break;
+        case MOD_ASSIGN:
+            block->expr = eval_mod(def, block, target, value);
+            break;
+        case PLUS_ASSIGN:
+            block->expr = eval_add(def, block, target, value);
+            break;
+        case MINUS_ASSIGN:
+            block->expr = eval_sub(def, block, target, value);
+            break;
+        case AND_ASSIGN:
+            block->expr = eval_and(def, block, target, value);
+            break;
+        case OR_ASSIGN:
+            block->expr = eval_or(def, block, target, value);
+            break;
+        case XOR_ASSIGN:
+            block->expr = eval_xor(def, block, target, value);
+            break;
+        case RSHIFT_ASSIGN:
+            block->expr = eval_rshift(def, block, target, value);
+            break;
+        case LSHIFT_ASSIGN:
+            block->expr = eval_lshift(def, block, target, value);
+            break;
+        }
     }
 
     value = eval_assign(def, block, target, block->expr);
@@ -1036,11 +1023,11 @@ INTERNAL struct var constant_expression(void)
 INTERNAL struct block *expression(struct definition *def, struct block *block)
 {
     block = assignment_expression(def, block);
-    while (peek().token == ',') {
-        consume(',');
+    while (try_consume(',')) {
         if (has_side_effects(block->expr)) {
             eval(def, block, block->expr);
         }
+
         block = assignment_expression(def, block);
     }
 
