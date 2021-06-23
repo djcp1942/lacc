@@ -20,7 +20,7 @@
  * that can fit inline.
  */
 #define TOK(t, s) {(t), 0, 0, 0, {0}, {SHORT_STRING_INIT(s)}}
-#define IDN(t, s) {(t), 0, 1, 0, {0}, {SHORT_STRING_INIT(s)}}
+#define IDN(t, s) {(t), 1, 0, 0, {0}, {SHORT_STRING_INIT(s)}}
 
 INTERNAL const struct token basic_token[] = {
 /* 0x00 */  TOK(END, "$"),              IDN(AUTO, "auto"),
@@ -48,7 +48,7 @@ INTERNAL const struct token basic_token[] = {
             TOK(COMMA, ","),            TOK(MINUS, "-"),
             TOK(DOT, "."),              TOK(SLASH, "/"),
 /* 0x30 */  IDN(RESTRICT, "restrict"),  TOK(ALIGNOF, "_Alignof"),
-            TOK(BOOL, "_Bool"),         {0},
+            TOK(BOOL, "_Bool"),         IDN(NORETURN, "_Noreturn"),
             {0},                        {0},
             {0},                        {0},
 /* 0x38 */  IDN(STATIC_ASSERT, "_Static_assert"),     {0},
@@ -262,7 +262,7 @@ INTERNAL struct token convert_preprocessing_number(struct token t)
                 endptr++;
             } else if (*endptr == 'l' || *endptr == 'L') {
                 tok.type = basic_type__long_double;
-                tok.d.val.ld = (long double) tok.d.val.d;
+                tok.d.val = put_long_double((long double) tok.d.val.d);
                 endptr++;
             }
         }
@@ -536,6 +536,7 @@ static struct token strtoident(const char *in, const char **endptr)
         if (S6('_', 'a', 's', 'm', '_', '_')) MATCH(ASM, 7);
         if (S4('B', 'o', 'o', 'l')) MATCH(BOOL, 5);
         if (S7('A', 'l', 'i', 'g', 'n', 'o', 'f')) MATCH(ALIGNOF, 8);
+        if (!strncmp(in, "Noreturn", 8) && E(8)) MATCH(NORETURN, 9);
         if (!strncmp(in, "Static_assert", 13) && E(13))
             MATCH(STATIC_ASSERT, 14);
         break;

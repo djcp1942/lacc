@@ -17,43 +17,23 @@
  * code.
  */
 struct var {
-    enum {
-        /*
-         * l-value or r-value reference to symbol, which must have some
-         * storage location. Offset evaluate to *(&symbol + offset).
-         * Offset in bytes, not pointer arithmetic.
-         *
-         * Also represent character in string literal. Direct references
-         * to string literals produce DIRECT vars of array type.
-         */
-        DIRECT,
-        /*
-         * r-value address of symbol. Evaluate to (&symbol + offset),
-         * always of pointer type. Offset in bytes, not pointer
-         * arithmetic.
-         *
-         * Also represent offset string literal, like .LC1+3.
-         */
-        ADDRESS,
-        /*
-         * l-value or r-value reference to *(symbol + offset). Symbol
-         * must have pointer type. If symbol is NULL, the dereferenced
-         * pointer is an immediate value. Offset in bytes, not pointer
-         * arithmetic.
-         *
-         * Not valid if symbol is string literal.
-         */
-        DEREF,
-        /*
-         * r-value immediate, with the type specified. Symbol is NULL,
-         * or is of type SYM_CONSTANT (from enum).
-         */
-        IMMEDIATE
-    } kind;
+    int kind : 8;
+
+    /*
+     * Width and offset in bits for field access. Normal references have
+     * default values of 0.
+     */
+    int field_width : 8;
+    int field_offset : 8;
+    unsigned int lvalue : 1;
+
+    /*
+     * Set if symbol of value union is valid. Otherwise the var is an
+     * immediate.
+     */
+    unsigned int is_symbol : 1;
 
     Type type;
-
-    const struct symbol *symbol;
 
     /*
      * Offset from symbol, which can only be positive. It is possible to
@@ -62,16 +42,43 @@ struct var {
      */
     size_t offset;
 
+    union {
+        const struct symbol *symbol;
+        union value imm;
+    } value;
+};
+
+enum kind {
     /*
-     * Width and offset in bits for field access. Normal references have
-     * default values of 0.
+     * l-value or r-value reference to symbol, which must have some
+     * storage location. Offset evaluate to *(&symbol + offset).
+     * Offset in bytes, not pointer arithmetic.
+     *
+     * Also represent character in string literal. Direct references
+     * to string literals produce DIRECT vars of array type.
      */
-    short field_width;
-    short field_offset;
-
-    int lvalue;
-
-    union value imm;
+    DIRECT,
+    /*
+     * r-value address of symbol. Evaluate to (&symbol + offset),
+     * always of pointer type. Offset in bytes, not pointer
+     * arithmetic.
+     *
+     * Also represent offset string literal, like .LC1+3.
+     */
+    ADDRESS,
+    /*
+     * l-value or r-value reference to *(symbol + offset). Symbol
+     * must have pointer type. If not is_symbol, the dereferenced
+     * pointer is an immediate value. Offset in bytes, not pointer
+     * arithmetic.
+     *
+     * Not valid if symbol is string literal.
+     */
+    DEREF,
+    /*
+     * r-value immediate, with the type specified.
+     */
+    IMMEDIATE
 };
 
 #define is_field(v) ((v).field_width != 0)

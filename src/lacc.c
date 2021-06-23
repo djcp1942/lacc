@@ -61,18 +61,6 @@
 # define LACC_LIB_PATH "/usr/local/lib/lacc"
 #endif
 
-/*
- * Configurable location of system headers. Default on Linux is GNU
- * libc. Can be overridden to point to for example musl.
- *
- * OpenBSD does not need a special path.
- */
-#ifndef SYSTEM_LIB_PATH
-# ifdef __linux__
-#  define SYSTEM_LIB_PATH "/usr/include/x86_64-linux-gnu"
-# endif
-#endif
-
 static enum lang {
     LANG_UNKNOWN,
     LANG_C,
@@ -184,6 +172,8 @@ static int option(const char *arg)
         context.target = TARGET_IR_DOT;
     } else if (!strcmp("-nostdinc", arg)) {
         nostdinc = 1;
+    } else if (!strcmp("-pedantic", arg)) {
+        context.pedantic = 1;
     }
 
     return 0;
@@ -511,6 +501,7 @@ static int parse_program_arguments(int argc, char *argv[])
         {"-include:", &add_include_file},
         {"-print-file-name=", &print_file_name},
         {"-pipe", &option},
+        {"-pedantic", &option},
         {"-MD", &option},
         {"-MP", &option},
         {"-Wl,", &add_linker_flag},

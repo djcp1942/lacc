@@ -11,20 +11,21 @@ Features
 Install
 -------
 Clone and build from source, and the binary will be placed in `bin/lacc`.
-Default include paths on Linux assume system headers being available at `/usr/include/x86_64-linux-gnu`, configurable by defining `SYSTEM_LIB_PATH`.
-BSD libc needs no special handling.
 
     git clone https://github.com/larmel/lacc.git
     cd lacc
     make
 
-Certain standard library headers, such as `stddef.h` and `stdarg.h`, contain definitions that are inherently compiler specific, and are provided specifically for lacc under [include/stdlib/](include/stdlib).
-The compiler is looking for these files at a default include path configurable by defining `LACC_LIB_PATH`, which by default points to the bin directory under the local source tree.
-The install target copies the standard headers to `/usr/local/lib/lacc`, and produces an optimized binary with this as the default include path.
+Some very basic probing of the environment is done in an attempt to detect which libc to use, which is mainly needed to determine default include path for system headers.
+Linker integration on Linux is currently supported for glibc and musl, and there is also support for OpenBSD.
+
+Certain standard library headers, such as `stddef.h` and `stdarg.h`, contain definitions that are inherently compiler specific, and are provided specifically for lacc under [lib/](lib/).
+If you want to use `bin/lacc` directly without installing the headers, you can override the location by setting `LIBDIR` to point to this folder directly.
+
+The install target will copy the binary and headers to the usual locations, which can also be overridden with `PREFIX` or `BINDIR`.
 
     make install
 
-The binary is placed in `/usr/local/bin`, which enables running `lacc` directly from terminal.
 Execute `make uninstall` to remove all the files that were copied.
 
 Usage
@@ -60,9 +61,9 @@ Some common linker flags are supported.
     -shared    Passed to linker as is.
     -rdynamic  Pass -export-dynamic to linker.
 
-As an example invocation, here is compiling [test/fact.c](test/fact.c) to object code, and then using the system linker to produce the final executable.
+As an example invocation, here is compiling [test/c89/fact.c](test/c89/fact.c) to object code, and then using the system linker to produce the final executable.
 
-    bin/lacc -c test/fact.c -o fact.o
+    bin/lacc -c test/c89/fact.c -o fact.o
     bin/lacc fact.o -o fact
 
 The program is part of the test suite, calculating 5! using recursion, and exiting with the answer.
@@ -154,14 +155,12 @@ The algorithm also has to be very conservative, as there is no pointer alias ana
 Using the liveness information, a transformation pass doing dead store elimination can remove `IR_ASSIGN` nodes which provably do nothing, reducing the size of the generated code.
 
 ### Backend
-There are three backend targets: textual assembly code, ELF object files, and
-dot for the intermediate representation.
+There are three backend targets: textual assembly code, ELF object files, and dot for the intermediate representation.
 Each `struct definition` object yielded from the parser is passed to the [src/backend/compile.c](src/backend/compile.c) module.
 Here we do a mapping from intermediate control flow graph representation down to a lower level IR, reducing the code to something that directly represents x86_64 instructions.
-The definition for this can be found in [src/backend/x86_64/instr.h](src/backend/x86_64/instr.h).
+The definition for this can be found in [src/backend/x86_64/encoding.h](src/backend/x86_64/encoding.h).
 
-Depending on function pointers set up on program start, the instructions are
-sent to either the ELF backend, or text assembly.
+Depending on function pointers set up on program start, the instructions are sent to either the ELF backend, or text assembly.
 The code to output text assembly is therefore very simple, more or less just a mapping between the low level IR instructions and their GNU syntax assembly code.
 See [src/backend/x86_64/assemble.c](src/backend/x86_64/assemble.c).
 
@@ -172,10 +171,10 @@ Correctness
 -----------
 Testing is done by comparing the runtime output of programs compiled with lacc and the system compiler (cc).
 A collection of small standalone programs used for validation can be found under the [test/](test/) directory.
-Tests are executed using [check.sh](check.sh), which will validate preprocessing, assembly, and ELF outputs.
+Tests are executed using [check.sh](test/check.sh), which will validate preprocessing, assembly, and ELF outputs.
 
-    $ ./check.sh bin/lacc test/fact.c
-    [-E: Ok!] [-S: Ok!] [-c: Ok!] [-c -O1: Ok!] :: test/fact.c
+    $ test/check.sh bin/lacc test/c89/fact.c
+    [-E: Ok!] [-S: Ok!] [-c: Ok!] [-c -O1: Ok!] :: test/c89/fact.c
 
 A complete test of the compiler is done by going through all test cases on a self-hosted version of lacc.
 
@@ -201,7 +200,8 @@ It will typically run thousands of tests without failure.
 
 The programs generated by Csmith contain a set of global variables, and functions making mutations on these.
 At the end, a checksum of the complete state of all variables is output.
-This checksum can then be compared against different compilers to find discreptancies, or bugs. See [doc/random.c](doc/random.c) for an example program generated by Csmith, which is also compiled correctly by lacc.
+This checksum can then be compared against different compilers to find discreptancies, or bugs.
+See [doc/random.c](doc/random.c) for an example program generated by Csmith, which is also compiled correctly by lacc.
 
 ### Creduce
 When a bug is found, we can use [creduce](https://embed.cs.utah.edu/creduce/) to make a minimal repro.
@@ -227,7 +227,7 @@ Each compiler is invoked with arguments `-c sqlite/sqlite3.c -o foo.o`.
 
 | Compiler       |        Cycles |   Instructions | Allocations | Bytes allocated | Result size |
 |:---------------|--------------:|---------------:|------------:|----------------:|------------:|
-| lacc           |   469,541,318 |    659,369,509 |      51,458 |      32,756,562 |   1,588,286 |
+| lacc           |   435,673,366 |    642,262,895 |      51,467 |      26,944,883 |   1,590,482 |
 | tcc (0.9.27)   |   245,142,166 |    397,514,762 |       2,909 |      23,020,917 |   1,409,716 |
 | gcc (9.3.0)    | 9,958,514,599 | 14,524,274,665 |   1,546,790 |   1,111,331,606 |   1,098,408 |
 | clang (10.0.0) | 4,351,456,211 |  5,466,808,426 |   1,434,072 |     476,529,342 |   1,116,992 |
@@ -246,8 +246,8 @@ Both of these targets are produced without any optimizations enabled, and withou
 
 | Compiler        | Cycles        | Instructions   |
 |:----------------|--------------:|---------------:|
-| lacc            | 1,046,327,532 |  1,659,594,278 |
-| lacc (selfhost) | 1,545,060,672 |  2,181,702,144 |
+| lacc            |   946,315,653 |  1,481,608,726 |
+| lacc (selfhost) | 1,417,112,690 |  2,046,996,115 |
 
 The selfhosted binary is slower to compile sqlite than the compiler built by GCC, showing that lacc indeed generates rather inefficient code.
 Improving the backend with better instruction selection is a priority, so these numbers should hopefully get closer in the future.

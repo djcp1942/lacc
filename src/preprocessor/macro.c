@@ -167,7 +167,7 @@ static struct token get__file__token(void)
  * Replace __FILE__ with file name, and __LINE__ with line number, by
  * mutating the replacement list on the fly.
  */
-const struct macro *macro_definition(String name)
+INTERNAL const struct macro *macro_definition(String name)
 {
     struct macro *ref;
 
@@ -634,18 +634,11 @@ INTERNAL int tok_cmp(struct token a, struct token b)
     if (a.token != b.token)
         return 1;
 
-    if (a.token == PARAM) {
-        return a.d.val.i != b.d.val.i;
-    } else if (a.token == NUMBER) {
-        if (!type_equal(a.type, b.type))
-            return 1;
-        return
-            (is_unsigned(a.type)) ?
-                a.d.val.u != b.d.val.u :
-                a.d.val.i != b.d.val.i;
-    } else {
-        return !str_eq(a.d.string, b.d.string);
+    if (a.token == PARAM || a.token == NUMBER) {
+        return !type_equal(a.type, b.type) || a.d.val.u != b.d.val.u;
     }
+
+    return !str_eq(a.d.string, b.d.string);
 }
 
 static char *str_write_escaped(char *ptr, const char *str, size_t len)
@@ -669,26 +662,27 @@ static char *stringify_concat(
     size_t *pos,
     struct token tok)
 {
-    size_t len;
+    size_t len, max;
     const char *raw;
     char *ptr;
     String str;
 
     assert(tok.token != NUMBER);
+    assert(tok.token != PARAM);
     str = tok.d.string;
-    len = (tok.leading_whitespace != 0) + str_len(str) * 2;
-    if (*pos + len > *cap) {
-        *cap = *pos + len;
+    len = str_len(str);
+    max = (tok.leading_whitespace != 0) + len * 2 + 4;
+    if (*cap < *pos + max) {
+        *cap = *pos + max;
         buf = realloc(buf, *cap);
     }
 
+    ptr = buf + *pos;
     if (tok.leading_whitespace != 0) {
-        buf[(*pos)++] = ' ';
+        *ptr++ = ' ';
     }
 
-    len = str_len(str);
     raw = str_raw(str);
-    ptr = buf + *pos;
     switch (tok.token) {
     case PREP_STRING:
     case STRING:
@@ -710,6 +704,7 @@ static char *stringify_concat(
     }
 
     *pos += ptr - (buf + *pos);
+    assert(*cap >= *pos);
     return buf;
 }
 
@@ -724,7 +719,7 @@ static char *stringify_concat(
 INTERNAL struct token stringify(const TokenArray *list)
 {
     struct token str = {0}, t;
-    size_t cap, ptr;
+    size_t cap, len;
     char *buf;
     int i;
 
@@ -750,7 +745,7 @@ INTERNAL struct token stringify(const TokenArray *list)
             str.token = PREP_STRING;
             cap = array_len(list) * 8;
             buf = malloc(cap);
-            ptr = 0;
+            len = 0;
             for (i = 0; i < array_len(list); ++i) {
                 t = array_get(list, i);
                 if (t.token == NEWLINE) {
@@ -760,15 +755,15 @@ INTERNAL struct token stringify(const TokenArray *list)
                     if (i == 0) {
                         t.leading_whitespace = 0;
                     }
-                    buf = stringify_concat(buf, &cap, &ptr, t);
+                    buf = stringify_concat(buf, &cap, &len, t);
                 }
             }
-            if (ptr > 0 && buf[ptr - 1] == '\\') {
+            if (len > 0 && buf[len - 1] == '\\') {
                 error("Invalid string literal ending with '\\'.");
                 exit(1);
             }
             str.leading_whitespace = array_get(list, 0).leading_whitespace;
-            str.d.string = str_intern(buf, ptr);
+            str.d.string = str_intern(buf, len);
             free(buf);
             break;
         }
