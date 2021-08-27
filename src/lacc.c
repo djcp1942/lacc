@@ -31,12 +31,14 @@
 # include "parser/expression.c"
 # include "parser/declaration.c"
 # include "parser/eval.c"
+# include "parser/builtin.c"
 #else
 # define INTERNAL
 # define EXTERNAL extern
 # include "backend/compile.h"
 # include "backend/linker.h"
 # include "optimizer/optimize.h"
+# include "parser/builtin.h"
 # include "parser/parse.h"
 # include "parser/symtab.h"
 # include "parser/typetree.h"
@@ -53,12 +55,8 @@
 #include <stdio.h>
 #include <unistd.h>
 
-/*
- * Configurable location of where compiler is installed. Headers can be
- * found under include folder.
- */
-#ifndef LACC_LIB_PATH
-# define LACC_LIB_PATH "/usr/local/lib/lacc"
+#if !defined(LIB_PATH) || !defined(INCLUDE_PATHS)
+# error Missing required configuration
 #endif
 
 static enum lang {
@@ -77,7 +75,6 @@ struct input_file {
 static const char *program, *output_name;
 static int optimization_level;
 static int dump_symbols, dump_types;
-static int nostdinc;
 
 static array_of(struct input_file) input_files;
 static array_of(char *) predefined_macros;
@@ -95,9 +92,6 @@ static int help(const char *arg)
 static int version(const char *arg)
 {
     fprintf(stdout, "lacc version 0.0.1");
-#ifdef LACC_GIT_REVISION
-    fprintf(stdout, " (" LACC_GIT_REVISION ")");
-#endif
 #ifndef NDEBUG
     fprintf(stdout, " DEBUG");
 #endif
@@ -171,7 +165,7 @@ static int option(const char *arg)
     } else if (!strcmp("-dot", arg)) {
         context.target = TARGET_IR_DOT;
     } else if (!strcmp("-nostdinc", arg)) {
-        nostdinc = 1;
+        context.nostdinc = 1;
     } else if (!strcmp("-pedantic", arg)) {
         context.pedantic = 1;
     }
@@ -441,14 +435,20 @@ static int add_linker_path(const char *path)
     return 0;
 }
 
+/*
+ * Print full path of library, or just echo the name if not found.
+ *
+ * -print-file-name=include can be used to find location of compiler
+ * builtin headers.
+ */
 static int print_file_name(const char *name)
 {
     FILE *f;
     char *path;
 
     assert(name);
-    path = calloc(1, strlen(LACC_LIB_PATH) + strlen(name) + 2);
-    strcpy(path, LACC_LIB_PATH);
+    path = calloc(1, strlen(LIB_PATH) + strlen(name) + 2);
+    strcpy(path, LIB_PATH);
     strcat(path, "/");
     strcat(path, name);
     if ((f = fopen(path, "r")) != 0) {
@@ -579,25 +579,6 @@ static void register_argument_definitions(void)
 }
 
 /*
- * Register compiler internal builtin symbols, that are assumed to
- * exists by standard library headers.
- */
-static void register_builtin_declarations(void)
-{
-    inject_line("void *memcpy(void *dest, const void *src, unsigned long n);");
-    inject_line("void __builtin_alloca(unsigned long);");
-    inject_line("void __builtin_va_start(void);");
-    inject_line("void __builtin_va_arg(void);");
-    inject_line(
-        "typedef struct {"
-        "   unsigned int gp_offset;"
-        "   unsigned int fp_offset;"
-        "   void *overflow_arg_area;"
-        "   void *reg_save_area;"
-        "} __builtin_va_list[1];");
-}
-
-/*
  * Add default search paths last, with lowest priority. These are
  * searched after anything specified with -I, and in the order listed.
  */
@@ -606,16 +587,12 @@ static void add_include_search_paths(void)
     int i;
     const char *path;
 
-    if (!nostdinc) {
-        add_include_search_path("/usr/local/include");
-    }
+    static const char *paths[] = { INCLUDE_PATHS };
 
-    add_include_search_path(LACC_LIB_PATH "/include");
-    if (!nostdinc) {
-#ifdef SYSTEM_LIB_PATH
-        add_include_search_path(SYSTEM_LIB_PATH);
-#endif
-        add_include_search_path("/usr/include");
+    if (!context.nostdinc) {
+        for (i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
+            add_include_search_path(paths[i]);
+        }
     }
 
     for (i = 0; i < array_len(&system_include_paths); ++i) {
@@ -633,7 +610,6 @@ static int process_file(struct input_file file)
     const struct symbol *sym;
 
     preprocess_reset();
-    expression_parse_init();
     set_input_file(file.name);
     register_builtin_definitions(context.standard);
     register_argument_definitions();
@@ -652,7 +628,7 @@ static int process_file(struct input_file file)
         preprocess(output);
     } else {
         set_compile_target(output, file.name);
-        register_builtin_declarations();
+        register_builtins();
         push_optimization(optimization_level);
 
         while ((def = parse()) != NULL) {

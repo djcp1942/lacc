@@ -23,18 +23,6 @@ typedef array_of(struct expression) ExprArray;
 static array_of(ExprArray *) args;
 static int max_depth;
 
-static String
-    str__builtin_va_start,
-    str__builtin_va_arg,
-    str__builtin_alloca;
-
-INTERNAL void expression_parse_init(void)
-{
-    str__builtin_va_start = str_c("__builtin_va_start");
-    str__builtin_va_arg = str_c("__builtin_va_arg");
-    str__builtin_alloca = str_c("__builtin_alloca");
-}
-
 INTERNAL void expression_parse_finalize(void)
 {
     int i;
@@ -65,102 +53,6 @@ static const struct symbol *find_symbol(String name)
 }
 
 /*
- * Parse call to builtin symbol __builtin_va_start, which is the result
- * of calling va_start(arg, s). Return type depends on second input
- * argument.
- */
-static struct block *parse__builtin_va_start(
-    struct definition *def,
-    struct block *block)
-{
-    Type type;
-    const struct member *mb;
-    const struct symbol *sym;
-
-    consume('(');
-    block = assignment_expression(def, block);
-    consume(',');
-    consume(IDENTIFIER);
-
-    sym = find_symbol(access_token(0)->d.string);
-    type = def->symbol->type;
-    if (!is_vararg(type)) {
-        error("Function must be vararg to use va_start.");
-        exit(1);
-    }
-
-    mb = get_member(type, nmembers(type) - 1);
-    if (!str_eq(mb->name, sym->name) || sym->depth != 1) {
-        error("Expected last function argument %s as va_start argument.",
-            str_raw(mb->name));
-        exit(1);
-    }
-
-    consume(')');
-    eval__builtin_va_start(block, block->expr);
-    return block;
-}
-
-/*
- * Parse call to builtin symbol __builtin_va_arg, which is the result of
- * calling va_arg(arg, T). Return type depends on second input argument.
- */
-static struct block *parse__builtin_va_arg(
-    struct definition *def,
-    struct block *block)
-{
-    struct var value;
-    Type type;
-
-    consume('(');
-    block = assignment_expression(def, block);
-    value = eval(def, block, block->expr);
-    consume(',');
-    type = declaration_specifiers(NULL);
-    if (peek() != ')') {
-        block = declarator(def, block, type, &type, NULL);
-    }
-
-    consume(')');
-    block->expr = eval_va_arg(def, block, value, type);
-    return block;
-}
-
-/*
- * Implement alloca as a normal VLA.
- *
- *     void *ptr = alloca(n + 1);
- *
- * is translated to
- *
- *     size_t len = n + 1;
- *     char sym[len];
- *     void *ptr = (void *) sym;
- */
-static struct block *parse__builtin_alloca(
-    struct definition *def,
-    struct block *block)
-{
-    struct var t1;
-    struct symbol *sym;
-
-    consume('(');
-    block = assignment_expression(def, block);
-    consume(')');
-
-    t1 = create_var(def, basic_type__unsigned_long);
-    eval_assign(def, block, t1, block->expr);
-
-    sym = sym_create_temporary(type_create_vla(basic_type__char, t1.value.symbol));
-    array_push_back(&def->locals, sym);
-
-    block = declare_vla(def, block, sym);
-    block->expr = eval_cast(def, block, var_direct(sym),
-        type_create_pointer(basic_type__void));
-    return block;
-}
-
-/*
  * Special handling for builtin pseudo functions. These are expected to
  * behave as macros, thus should be no problem parsing as function call
  * in primary expression. Constructs like (va_arg)(args, int) will not
@@ -182,12 +74,8 @@ static struct block *primary_expression(
     switch (tok->token) {
     case IDENTIFIER:
         sym = find_symbol(tok->d.string);
-        if (str_eq(str__builtin_va_start, sym->name)) {
-            block = parse__builtin_va_start(def, block);
-        } else if (str_eq(str__builtin_va_arg, sym->name)) {
-            block = parse__builtin_va_arg(def, block);
-        } else if (str_eq(str__builtin_alloca, sym->name)) {
-            block = parse__builtin_alloca(def, block);
+        if (sym->symtype == SYM_BUILTIN) {
+            block = sym->value.handler(def, block);
         } else {
             block->expr = as_expr(var_direct(sym));
         }

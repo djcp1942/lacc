@@ -75,9 +75,6 @@ static Type get_string_type(size_t len)
     return handle.type;
 }
 
-/* Save memcpy reference for backend. */
-INTERNAL const struct symbol *decl_memcpy = NULL;
-
 /*
  * Keep track of all function declarations globally, in order to coerce
  * forward declarations made in inner scope.
@@ -127,8 +124,6 @@ INTERNAL void symtab_clear(void)
 {
     int i;
     struct symbol *sym;
-
-    decl_memcpy = NULL;
 
     for (i = 0; i < array_len(&ns_label.symbols); ++i) {
         sym = array_get(&ns_label.symbols, i);
@@ -358,6 +353,7 @@ static struct symbol *sym_redeclare(
         break;
     case SYM_LABEL:
     case SYM_LITERAL:
+    case SYM_BUILTIN:
         assert(0);
         break;
     }
@@ -392,7 +388,6 @@ INTERNAL struct symbol *sym_add(
     enum linkage linkage)
 {
     static int n;
-    static String smemcpy = SHORT_STRING_INIT("memcpy");
 
     int depth;
     struct symbol *sym;
@@ -422,10 +417,6 @@ INTERNAL struct symbol *sym_add(
     sym->type = type;
     sym->symtype = symtype;
     sym->linkage = linkage;
-    if (!decl_memcpy && str_eq(smemcpy, sym->name)) {
-        decl_memcpy = sym;
-    }
-
     if (linkage == LINK_INTERN && sym->depth) {
         sym->n = ++n;
     }
@@ -449,7 +440,8 @@ INTERNAL struct symbol *sym_add(
                 sym->symtype == SYM_DECLARATION ? "declaration" :
                 sym->symtype == SYM_TYPEDEF ? "typedef" :
                 sym->symtype == SYM_TAG ? "tag" :
-                sym->symtype == SYM_CONSTANT ? "number" : "string"),
+                sym->symtype == SYM_CONSTANT ? "number" :
+                sym->symtype == SYM_LITERAL ? "string" : "builtin"),
             (sym->linkage == LINK_INTERN ? "intern" :
                 sym->linkage == LINK_EXTERN ? "extern" : "none"),
             sym_name(sym),
@@ -545,6 +537,17 @@ INTERNAL struct symbol *sym_create_string(String str)
     return sym;
 }
 
+INTERNAL struct symbol *sym_create_builtin(
+    String name,
+    struct block *(*handler)(struct definition *, struct block *))
+{
+    struct symbol *sym;
+
+    sym = sym_add(&ns_ident, name, basic_type__void, SYM_BUILTIN, LINK_NONE);
+    sym->value.handler = handler;
+    return sym;
+}
+
 INTERNAL void sym_discard(struct symbol *sym)
 {
     array_push_back(&temporaries, sym);
@@ -618,6 +621,9 @@ static void print_symbol(FILE *stream, const struct symbol *sym)
         break;
     case SYM_LABEL:
         fprintf(stream, "label ");
+        break;
+    case SYM_BUILTIN:
+        fprintf(stream, "builtin ");
         break;
     }
 

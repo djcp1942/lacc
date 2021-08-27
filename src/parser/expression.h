@@ -15,8 +15,6 @@ INTERNAL struct block *conditional_expression(
     struct definition *def,
     struct block *block);
 
-INTERNAL void expression_parse_init(void);
-
 INTERNAL void expression_parse_finalize(void);
 
 #endif
